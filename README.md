@@ -1,8 +1,15 @@
 # bottle-lmdb
 Lightning Memory-Mapped Database (LMDB) plugin for Bottle.
 
-Usage:
+## Installation
 
+```bash
+pip install bottle-lmdb
+```
+
+## Usage
+
+This is a simple example:
 ```python
 from bottle import Bottle
 from bottle_lmdb import LMDBPlugin
