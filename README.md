@@ -1,5 +1,5 @@
 # bottle-lmdb
-Lightning Memory-Mapped Database (LMDB) plugin for Bottle.
+Lightning Memory-Mapped Database (LMDB) plugin for Bottle (Python web framework).
 
 ## Installation
 
