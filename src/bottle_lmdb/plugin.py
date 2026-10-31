@@ -1,3 +1,4 @@
+import inspect
 import typing
 import lmdb
 
@@ -23,7 +24,7 @@ class LMDBPlugin:
             del self._kwargs["keyword"]
         else:
             keyword = "db"
-        self._keyword = keyword
+        self._keyword: str = keyword
 
     @property
     def env(self) -> lmdb.Environment:
@@ -48,9 +49,17 @@ class LMDBPlugin:
             A wrapper that passes the environment to the callback
             via the configured keyword argument.
         """
+        keyword = route.config.get("lmdb.keyword", self._keyword)
+        
+        try:
+            args = inspect.signature(route.callback).parameters
+        except (TypeError, ValueError):
+            return callback
+        if keyword not in args:
+            return callback
 
         def wrapper(*a, **ka):
-            ka[self._keyword] = self.env
+            ka[keyword] = self.env
             return callback(*a, **ka)
 
         return wrapper

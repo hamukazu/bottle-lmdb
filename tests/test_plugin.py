@@ -1,28 +1,11 @@
 """Tests for LMDBPlugin integration with Bottle."""
 
-from io import BytesIO
-from wsgiref.util import setup_testing_defaults
-
+import httpx
 import lmdb
 import pytest
 from bottle import Bottle
 
 from bottle_lmdb import LMDBPlugin
-
-
-def call_app(app, path="/"):
-    """Call a Bottle WSGI app directly and return (status, body)."""
-    environ = {}
-    setup_testing_defaults(environ)
-    environ["PATH_INFO"] = path
-    environ["wsgi.input"] = BytesIO(b"")
-    result = {}
-
-    def start_response(status, headers, exc_info=None):
-        result["status"] = status
-
-    body = b"".join(app(environ, start_response))
-    return result["status"], body
 
 
 @pytest.fixture
@@ -31,8 +14,8 @@ def db_path(tmp_path):
 
 
 @pytest.fixture
-def app(db_path):
-    """A Bottle app with the plugin installed and a route using the db."""
+def client(db_path):
+    """An httpx client wrapping a Bottle app with the plugin installed."""
     plugin = LMDBPlugin(db_path)
     app = Bottle()
     app.install(plugin)
@@ -49,7 +32,9 @@ def app(db_path):
             value = txn.get(key.encode())
         return value.decode() if value else "not found"
 
-    return app
+    transport = httpx.WSGITransport(app)
+    with httpx.Client(transport=transport, base_url="http://testserver") as client:
+        yield client
 
 
 def test_plugin_attributes(db_path):
@@ -75,14 +60,14 @@ def test_env_kwargs_are_forwarded(tmp_path):
     plugin.env.close()
 
 
-def test_route_receives_env_via_default_keyword(app):
-    status, body = call_app(app, "/write/foo/bar")
-    assert status.startswith("200")
-    assert body == b"ok"
+def test_route_receives_env_via_default_keyword(client):
+    res = client.get("/write/foo/bar")
+    assert res.status_code == 200
+    assert res.text == "ok"
 
-    status, body = call_app(app, "/read/foo")
-    assert status.startswith("200")
-    assert body == b"bar"
+    res = client.get("/read/foo")
+    assert res.status_code == 200
+    assert res.text == "bar"
 
 
 def test_route_receives_env_via_custom_keyword(tmp_path):
@@ -98,21 +83,72 @@ def test_route_receives_env_via_custom_keyword(tmp_path):
             txn.put(b"key", value.encode())
         return "ok"
 
-    status, body = call_app(app, "/put/baz")
-    assert status.startswith("200")
-    assert body == b"ok"
+    transport = httpx.WSGITransport(app)
+    with httpx.Client(transport=transport, base_url="http://testserver") as client:
+        res = client.get("/put/baz")
+    assert res.status_code == 200
+    assert res.text == "ok"
 
     with plugin.env.begin() as txn:
         assert txn.get(b"key") == b"baz"
     plugin.env.close()
 
 
-def test_data_persists_across_requests(app):
-    call_app(app, "/write/hello/world")
-    status, body = call_app(app, "/read/hello")
-    assert status.startswith("200")
-    assert body == b"world"
+def test_data_persists_across_requests(client):
+    client.get("/write/hello/world")
+    res = client.get("/read/hello")
+    assert res.status_code == 200
+    assert res.text == "world"
 
-    status, body = call_app(app, "/read/missing")
-    assert status.startswith("200")
-    assert body == b"not found"
+    res = client.get("/read/missing")
+    assert res.status_code == 200
+    assert res.text == "not found"
+
+
+def test_route_with_view_decorator(tmp_path):
+    """Endpoints wrapped by @view (or similar decorators) still receive the env."""
+    from bottle import view
+
+    db_path = str(tmp_path / "view.lmdb")
+    plugin = LMDBPlugin(db_path)
+    app = Bottle()
+    app.install(plugin)
+
+    @app.get("/read/<key>")
+    @view("{{result}}")
+    def read(key, db):
+        with db.begin() as txn:
+            value = txn.get(key.encode())
+        return dict(result=value.decode() if value else "not found")
+
+    transport = httpx.WSGITransport(app)
+    with httpx.Client(transport=transport, base_url="http://testserver") as client:
+        res = client.get("/read/foo")
+    assert res.status_code == 200
+    assert res.text == "not found"
+
+    plugin.env.close()
+
+
+def test_route_with_custom_keyword_per_route(tmp_path):
+    """Route-level config can override the plugin keyword."""
+    db_path = str(tmp_path / "per_route.lmdb")
+    plugin = LMDBPlugin(db_path)
+    app = Bottle()
+    app.install(plugin)
+
+    @app.get("/put/<value>", lmdb={"keyword": "store"})
+    def put(value, store):
+        with store.begin(write=True) as txn:
+            txn.put(b"key", value.encode())
+        return "ok"
+
+    transport = httpx.WSGITransport(app)
+    with httpx.Client(transport=transport, base_url="http://testserver") as client:
+        res = client.get("/put/baz")
+    assert res.status_code == 200
+    assert res.text == "ok"
+
+    with plugin.env.begin() as txn:
+        assert txn.get(b"key") == b"baz"
+    plugin.env.close()
